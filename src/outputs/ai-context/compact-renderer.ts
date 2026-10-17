@@ -12,6 +12,7 @@ import type {
     WorkbookIR,
 } from "./types.js";
 import { describeHiddenContent } from "../../structure/layout/sheet-visibility.js";
+import { toMarkdownLinkTarget } from "../../structure/formatting/link-target.js";
 
 /** Escapes one compact table cell without padding. */
 function escapeCompactCell(value: string): string {
@@ -29,8 +30,9 @@ function renderCompactCellText(cell: IrCell): string {
     const label = escapeCompactCell(cell.display);
     const link = cell.hyperlink;
     if (!link || !label) return label;
-    const target = escapeCompactCell(link.target);
-    return link.kind === "external" ? `[${label}](${target})` : `${label} (${target})`;
+    const linkTarget = link.kind === "external" ? toMarkdownLinkTarget(link.target) : null;
+    if (linkTarget) return `[${label}](${escapeCompactCell(linkTarget)})`;
+    return `${label} (${escapeCompactCell(link.target)})`;
 }
 
 /** Renders one IR table row as a tight pipe row of cell texts. */

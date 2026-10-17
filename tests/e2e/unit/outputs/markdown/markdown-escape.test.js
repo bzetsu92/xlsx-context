@@ -39,4 +39,15 @@ describe("xlsx-context markdown escape", () => {
             { kind: "text", text: " b", rawText: " b" },
         ]);
     });
+
+    it("escapes heading names without hurting readability", () => {
+        const escape = markdownEscape.escapeMarkdownHeadingText;
+        expect(escape("A B-東京&大阪.01")).toBe("A B-東京&大阪.01");
+        expect(escape("Q1_2024 (draft)")).toBe("Q1\\_2024 (draft)");
+        expect(escape("<img src=x onerror=alert(1)>")).toBe("\\<img src=x onerror=alert(1)\\>");
+        expect(escape("[click](javascript:x)")).toBe("\\[click\\](javascript:x)");
+        expect(escape("a &copy; b")).toBe("a &amp;copy; b");
+        expect(escape("Plan ##")).toBe("Plan \\#\\#");
+        expect(escape("line\nbreak")).toBe("line break");
+    });
 });

@@ -24,6 +24,7 @@ import {
 } from "../../structure/layout/sheet-sections.js";
 import { createAssetSections } from "./asset-sections.js";
 import { createCellMarkdown } from "./cell-markdown.js";
+import { escapeMarkdownHeadingText } from "./markdown-escape.js";
 import { createContentSections, type ContentSection, type GroupedSection } from "./table-sections.js";
 
 type SheetRenderState = {
@@ -177,9 +178,10 @@ function createSheetMarkdown(deps: SheetMarkdownDeps) {
     function createSheetMarkdownText(workbook: ParsedWorkbook, sheet: ParsedSheet, state: SheetRenderState): string {
         const hiddenNote = describeHiddenContent(sheet);
         const markdown = [
-            `# Book: ${workbook.name}`,
+            // Names come from the file. Escape them, so they cannot add Markdown structure.
+            `# Book: ${escapeMarkdownHeadingText(workbook.name)}`,
             "",
-            `## Sheet: ${sheet.name}`,
+            `## Sheet: ${escapeMarkdownHeadingText(sheet.name)}`,
             "",
             ...(hiddenNote ? [`> ${hiddenNote}`, ""] : []),
             state.body || "_No extractable body content was found._",

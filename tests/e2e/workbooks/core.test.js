@@ -277,6 +277,32 @@ describe("workbook settings that the file declares", () => {
         expect(value("A3")).toBe("Thứ Sáu 15 Tháng 3 2024");
     });
 
+    it("keeps file names and link targets from adding Markdown structure or script links", async () => {
+        const zip = buildWorkbook({
+            sheets: [
+                {
+                    // The XML attribute holds the sheet name Q_1 <b>.
+                    name: "Q_1 &lt;b&gt;",
+                    xml: `<sheetData><row r="1">${inline("A1", "run")}</row><row r="2">${inline("A2", "open")}</row></sheetData>
+                        <hyperlinks><hyperlink ref="A1" r:id="rId1"/><hyperlink ref="A2" r:id="rId2"/></hyperlinks>`,
+                    rels:
+                        `<Relationship Id="rId1" Type="${REL}/hyperlink" Target="javascript:alert(1)" TargetMode="External"/>` +
+                        `<Relationship Id="rId2" Type="${REL}/hyperlink" Target="https://x.test/a)b" TargetMode="External"/>`,
+                },
+            ],
+        });
+
+        const workbook = await core.parseWorkbook(zip, "links.xlsx");
+        const markdown = core.convertWorkbookToMarkdownFiles(workbook)[0].markdown;
+        const compact = renderCompactMarkdown(buildWorkbookIR(workbook));
+
+        expect(markdown).toContain("## Sheet: Q\\_1 \\<b\\>");
+        for (const text of [markdown, compact]) {
+            expect(text).not.toContain("](javascript");
+            expect(text).toContain("https://x.test/a%29b");
+        }
+    });
+
     it("marks hidden sheets, rows, and columns, and drops them on request", async () => {
         const zip = buildWorkbook({
             sheets: [

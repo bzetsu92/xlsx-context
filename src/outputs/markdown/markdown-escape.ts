@@ -110,5 +110,22 @@ function escapeMarkdownLiteralText(text: string): string {
         .join("\n");
 }
 
+/**
+ * Escapes a name from the file for one heading line, such as a sheet name.
+ * Keeps the text readable: backslash-escapes only marks that change a heading
+ * line (emphasis, code, links, HTML, strike), "&" before an entity, and a trailing "#".
+ */
+function escapeMarkdownHeadingText(text: string): string {
+    return (
+        String(text || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/[\\`*_\[\]<>~]/g, "\\$&")
+            .replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;")
+            // A trailing run of "#" would close the heading and vanish.
+            .replace(/(#+)$/, (marks) => marks.replace(/#/g, "\\#"))
+    );
+}
+
 /** Escapes cell text for Markdown output. */
-export { escapeMarkdownLineStart, escapeMarkdownLiteralParts, escapeMarkdownLiteralText };
+export { escapeMarkdownHeadingText, escapeMarkdownLineStart, escapeMarkdownLiteralParts, escapeMarkdownLiteralText };

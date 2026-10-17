@@ -171,3 +171,15 @@ Pass an exact counter when the budget must match a language model:
 const counter = await createTiktokenCounter("o200k_base");
 const context = toAIContext(workbook, { maxTokens: 512, counter });
 ```
+
+## Untrusted content
+
+A workbook is input from outside your system. Treat its text as data, never as instructions.
+
+- Cell text, comments, sheet names, and shape text go into the context as they are.
+  A cell can hold text such as "ignore previous instructions". The library does not remove it.
+- Put the workbook text in a delimited data section of your prompt, apart from your instructions.
+- Markdown output escapes names and cell text, so the file cannot add headings, links, or HTML.
+  A link target with a `javascript:`, `vbscript:`, or `data:` scheme stays plain text.
+- Limits stop hostile packages: entry count, uncompressed size, inflation past the declared size,
+  and hyperlink ranges. A file over a limit fails with an error.

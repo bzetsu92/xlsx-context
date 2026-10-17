@@ -23,6 +23,7 @@ import type {
 } from "./types.js";
 import { colToLetters, formatRange } from "../../structure/addresses/address-utils.js";
 import { findChartSourceTables } from "../../structure/layout/chart-sources.js";
+import { toMarkdownLinkTarget } from "../../structure/formatting/link-target.js";
 import { extractNarrativeBlocks } from "../../structure/layout/narrative-blocks.js";
 import { resolveConnectorEnds } from "../../structure/layout/shape-graph.js";
 import { resolveShapeTargets } from "../../structure/layout/shape-targets.js";
@@ -103,7 +104,8 @@ function toNarrativeCellText(cell: ParsedCell): string {
         .trim();
     const link = toIrHyperlink(cell.hyperlink);
     if (!link || !label) return label;
-    return link.kind === "external" ? `[${label}](${link.target})` : `${label} (${link.target})`;
+    const linkTarget = link.kind === "external" ? toMarkdownLinkTarget(link.target) : null;
+    return linkTarget ? `[${label}](${linkTarget})` : `${label} (${link.target})`;
 }
 
 /** Asset ids follow array order, like the Markdown Chart/Image/Shape headings. */

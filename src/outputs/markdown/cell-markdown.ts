@@ -1,6 +1,8 @@
 import type { MarkdownOptions, ParsedCell, ParsedSheet, ParsedWorkbook } from "../../model/index.js";
 import type { NarrativeCellFormatter } from "../../structure/layout/narrative-blocks.js";
 import { resolveMarkdownOptions } from "./markdown-options.js";
+import { toMarkdownLinkTarget } from "../../structure/formatting/link-target.js";
+import { escapeMarkdownLiteralText } from "./markdown-escape.js";
 import { createRichTextRenderer } from "./rich-text/rich-text-renderer.js";
 
 type CellMarkdownValues = {
@@ -82,8 +84,11 @@ export function createCellMarkdown(deps: CellMarkdownDeps = {}) {
         const label = String(text || "").trim();
         if (!hyperlink || !label) return text;
         if (hyperlink.kind === "external") {
-            const href = String(hyperlink.target || "").trim();
-            return href ? `[${label}](${href})` : label;
+            const target = String(hyperlink.target || "").trim();
+            const href = toMarkdownLinkTarget(target);
+            if (href) return `[${label}](${href})`;
+            // Unsafe or empty target: keep it visible as plain text, never as a link.
+            return target ? `${label} (${escapeMarkdownLiteralText(target)})` : label;
         }
         const currentSheetName = sheet?.name || "";
         const { sheetName, refText } = parseInternalHyperlinkLocation(
