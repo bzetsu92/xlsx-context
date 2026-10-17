@@ -1,0 +1,373 @@
+import { describe, expect, it } from "vitest";
+import * as worksheetParser from "../../../../../src/extraction/workbook/worksheet-parser.ts";
+
+function createDeps() {
+    return {
+        EMPTY_BORDERS: { top: false, bottom: false, left: false, right: false },
+        xmlToDocument(xmlText) {
+            return new DOMParser().parseFromString(xmlText, "application/xml");
+        },
+        decodeXmlText(bytes) {
+            return new TextDecoder().decode(bytes);
+        },
+        getTextContent(node) {
+            return (node?.textContent || "").replace(/\r\n/g, "\n");
+        },
+        parseCellAddress(address) {
+            const match = String(address || "").match(/^([A-Z]+)(\d+)$/i);
+            if (!match) return { row: 0, col: 0 };
+            const letters = match[1].toUpperCase();
+            let col = 0;
+            for (const ch of letters) col = col * 26 + (ch.charCodeAt(0) - 64);
+            return { row: Number(match[2]), col };
+        },
+        parseRangeRef(ref) {
+            const [start, end] = String(ref).split(":");
+            const s = this.parseCellAddress(start);
+            const e = this.parseCellAddress(end || start);
+            return { startRow: s.row, startCol: s.col, endRow: e.row, endCol: e.col, ref };
+        },
+        parseWorksheetTables() {
+            return [];
+        },
+        parseDrawingImages() {
+            return [];
+        },
+        parseDrawingCharts() {
+            return [];
+        },
+        parseDrawingShapes() {
+            return [];
+        },
+        parseRelationshipEntries(files, relsPath, sourcePath) {
+            const relBytes = files.get(relsPath);
+            if (!relBytes) return new Map();
+            const doc = new DOMParser().parseFromString(new TextDecoder().decode(relBytes), "application/xml");
+            const entries = new Map();
+            for (const node of Array.from(doc.getElementsByTagName("Relationship"))) {
+                const id = node.getAttribute("Id") || "";
+                const target = node.getAttribute("Target") || "";
+                if (!id || !target) continue;
+                const targetMode = node.getAttribute("TargetMode") || "";
+                const baseParts = String(sourcePath || "")
+                    .split("/")
+                    .slice(0, -1);
+                const parts = target.startsWith("/") ? [] : baseParts;
+                for (const part of target.split("/")) {
+                    if (!part || part === ".") continue;
+                    if (part === "..") parts.pop();
+                    else parts.push(part);
+                }
+                entries.set(id, {
+                    target: targetMode === "External" ? target : parts.join("/"),
+                    targetMode,
+                    type: node.getAttribute("Type") || "",
+                });
+            }
+            return entries;
+        },
+        buildRelsPath(sourcePath) {
+            const parts = String(sourcePath || "").split("/");
+            const fileName = parts.pop() || "";
+            return `${parts.join("/")}/_rels/${fileName}.rels`;
+        },
+        formatCellDisplayValue(rawValue, style) {
+            if (style.numFmtId === 10) {
+                return `${(Number(rawValue) * 100).toFixed(1)}%`;
+            }
+            return null;
+        },
+        buildAssetDeps() {
+            return {};
+        },
+        lettersToCol(letters) {
+            let result = 0;
+            for (const ch of String(letters).toUpperCase()) result = result * 26 + (ch.charCodeAt(0) - 64);
+            return result;
+        },
+        colToLetters(col) {
+            let current = col;
+            let result = "";
+            while (current > 0) {
+                const remainder = (current - 1) % 26;
+                result = String.fromCharCode(65 + remainder) + result;
+                current = Math.floor((current - 1) / 26);
+            }
+            return result;
+        },
+    };
+}
+
+describe("xlsx-context worksheet parser", () => {
+    it("extracts shared string and boolean cell values", () => {
+        const api = worksheetParser;
+        const cellStyle = {
+            borders: {},
+            numFmtId: 0,
+            formatCode: "General",
+            textStyle: { bold: false, italic: false, strike: false, underline: false },
+        };
+        const sharedCell = new DOMParser().parseFromString('<c t="s"><v>1</v></c>', "application/xml").documentElement;
+        const boolCell = new DOMParser().parseFromString('<c t="b"><v>1</v></c>', "application/xml").documentElement;
+        const deps = createDeps();
+
+        expect(
+            api.extractCellOutputValue(
+                sharedCell,
+                [
+                    { text: "A", runs: null },
+                    { text: "B", runs: null },
+                ],
+                cellStyle,
+                deps
+            )
+        ).toMatchObject({
+            valueType: "s",
+            outputValue: "B",
+        });
+        expect(api.extractCellOutputValue(boolCell, [], cellStyle, deps)).toMatchObject({
+            valueType: "b",
+            outputValue: "TRUE",
+        });
+    });
+
+    it("applies the cell font only to rich-text runs without rPr", () => {
+        const italicCellStyle = {
+            borders: {},
+            numFmtId: 0,
+            formatCode: "General",
+            textStyle: { bold: false, italic: true, strike: false, underline: false },
+        };
+        const plain = { bold: false, italic: false, strike: false, underline: false };
+        const sharedCell = new DOMParser().parseFromString('<c t="s"><v>0</v></c>', "application/xml").documentElement;
+        const runsOf = (runs) =>
+            worksheetParser.extractCellOutputValue(
+                sharedCell,
+                [{ text: runs.map((run) => run.text).join(""), runs }],
+                italicCellStyle,
+                createDeps()
+            ).richTextRuns;
+
+        // Excel writes "+" and "strike" with their own rPr, so the italic cell font does not reach them.
+        expect(
+            runsOf([
+                { ...plain, text: "italic", ownStyle: false },
+                { ...plain, text: "+", ownStyle: true },
+                { ...plain, text: "strike", ownStyle: true, strike: true },
+            ])
+        ).toEqual([
+            { ...plain, text: "italic", italic: true },
+            { ...plain, text: "+" },
+            { ...plain, text: "strike", strike: true },
+        ]);
+        // Every run sets its own plain font. One plain run blocks the italic cell style.
+        expect(runsOf([{ ...plain, text: "plain", ownStyle: true }])).toEqual([{ ...plain, text: "plain" }]);
+
+        const inlineCell = new DOMParser().parseFromString(
+            '<c t="inlineStr"><is><r><t>a</t></r><r><rPr><b/></rPr><t>b</t></r></is></c>',
+            "application/xml"
+        ).documentElement;
+        expect(
+            worksheetParser.extractCellOutputValue(inlineCell, [], italicCellStyle, createDeps()).richTextRuns
+        ).toEqual([
+            { ...plain, text: "a", italic: true },
+            { ...plain, text: "b", bold: true },
+        ]);
+    });
+
+    it("translates shared formulas across relative references", () => {
+        const api = worksheetParser;
+        const deps = createDeps();
+
+        const translated = api.translateSharedFormula("=A1+$B$1", "C1", "C3", deps);
+
+        expect(translated).toBe("=A3+$B$1");
+    });
+
+    it("parses worksheet cells, merges, and shared formulas", () => {
+        const api = worksheetParser;
+        const deps = createDeps();
+        const worksheetXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <sheetData>
+          <row r="1">
+            <c r="A1" t="s"><v>0</v></c>
+            <c r="B1" s="1"><v>0.125</v></c>
+            <c r="C1"><f t="shared" si="0">A1</f><v>1</v></c>
+          </row>
+          <row r="2">
+            <c r="C2"><f t="shared" si="0"/><v>2</v></c>
+          </row>
+        </sheetData>
+        <mergeCells count="1">
+          <mergeCell ref="A1:B2"/>
+        </mergeCells>
+      </worksheet>`;
+        const files = new Map([["xl/worksheets/sheet1.xml", new TextEncoder().encode(worksheetXml)]]);
+        const cellStyles = [
+            {
+                borders: { top: false, bottom: false, left: false, right: false },
+                numFmtId: 0,
+                formatCode: "General",
+                textStyle: { bold: false, italic: false, strike: false, underline: false },
+            },
+            {
+                borders: { top: false, bottom: false, left: false, right: false },
+                numFmtId: 10,
+                formatCode: "0.0%",
+                textStyle: { bold: false, italic: false, strike: false, underline: false },
+            },
+        ];
+
+        const sheet = api.parseWorksheet(
+            files,
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            1,
+            [{ text: "Hello", runs: null }],
+            cellStyles,
+            deps
+        );
+
+        expect(sheet.cells.find((cell) => cell.address === "A1")?.outputValue).toBe("Hello");
+        expect(sheet.cells.find((cell) => cell.address === "B1")?.outputValue).toBe("12.5%");
+        expect(sheet.cells.find((cell) => cell.address === "C1")?.formulaText).toBe("=A1");
+        expect(sheet.cells.find((cell) => cell.address === "C2")?.formulaText).toBe("=A2");
+        expect(sheet.merges).toEqual([{ startRow: 1, startCol: 1, endRow: 2, endCol: 2, ref: "A1:B2" }]);
+        expect(sheet.maxRow).toBe(2);
+        expect(sheet.maxCol).toBe(3);
+    });
+
+    it("parses worksheet hyperlinks from local refs and external relationships", () => {
+        const api = worksheetParser;
+        const deps = createDeps();
+        const worksheetXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                 xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+        <sheetData>
+          <row r="1">
+            <c r="A1" t="inlineStr"><is><t>Open</t></is></c>
+            <c r="B1" t="inlineStr"><is><t>Jump</t></is></c>
+          </row>
+        </sheetData>
+        <hyperlinks>
+          <hyperlink ref="A1" r:id="rId1"/>
+          <hyperlink ref="B1" location="'Other Sheet'!C3" tooltip="go"/>
+        </hyperlinks>
+      </worksheet>`;
+        const files = new Map([
+            ["xl/worksheets/sheet1.xml", new TextEncoder().encode(worksheetXml)],
+            [
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                new TextEncoder().encode(
+                    '<?xml version="1.0" encoding="UTF-8"?>' +
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                        '<Relationship Id="rId1" Target="https://example.com/" TargetMode="External"/>' +
+                        "</Relationships>"
+                ),
+            ],
+        ]);
+
+        const sheet = api.parseWorksheet(
+            files,
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            1,
+            [],
+            [
+                {
+                    borders: { top: false, bottom: false, left: false, right: false },
+                    numFmtId: 0,
+                    formatCode: "General",
+                    textStyle: { bold: false, italic: false, strike: false, underline: false },
+                },
+            ],
+            deps
+        );
+
+        expect(sheet.cells.find((cell) => cell.address === "A1")?.hyperlink).toEqual({
+            kind: "external",
+            target: "https://example.com/",
+            location: "",
+            tooltip: "",
+            display: "",
+        });
+        expect(sheet.cells.find((cell) => cell.address === "B1")?.hyperlink).toEqual({
+            kind: "internal",
+            target: "'Other Sheet'!C3",
+            location: "'Other Sheet'!C3",
+            tooltip: "go",
+            display: "",
+        });
+    });
+
+    it("parses notes and threaded comments from worksheet relationships", () => {
+        const api = worksheetParser;
+        const deps = createDeps();
+        const worksheetXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <sheetData>
+          <row r="1"><c r="A1" t="inlineStr"><is><t>Cell</t></is></c></row>
+        </sheetData>
+      </worksheet>`;
+        const commentsXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <authors><author>Alice</author></authors>
+        <commentList>
+          <comment ref="A1" authorId="0"><text><r><t>Legacy note</t></r></text></comment>
+        </commentList>
+      </comments>`;
+        const personsXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <personList xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">
+        <person id="{person-1}" displayName="Bob"/>
+      </personList>`;
+        const threadedXml = `<?xml version="1.0" encoding="UTF-8"?>
+      <ThreadedComments xmlns="http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments">
+        <threadedComment ref="B2" personId="{person-1}" dT="2026-07-02T10:00:00Z"><text>Threaded reply</text></threadedComment>
+      </ThreadedComments>`;
+        const files = new Map([
+            ["xl/worksheets/sheet1.xml", new TextEncoder().encode(worksheetXml)],
+            ["xl/comments1.xml", new TextEncoder().encode(commentsXml)],
+            ["xl/persons/person.xml", new TextEncoder().encode(personsXml)],
+            ["xl/threadedComments/threadedComment1.xml", new TextEncoder().encode(threadedXml)],
+            [
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                new TextEncoder().encode(
+                    '<?xml version="1.0" encoding="UTF-8"?>' +
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+                        '<Relationship Id="comments" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"/>' +
+                        '<Relationship Id="threaded" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>' +
+                        "</Relationships>"
+                ),
+            ],
+        ]);
+
+        const sheet = api.parseWorksheet(
+            files,
+            "Sheet1",
+            "xl/worksheets/sheet1.xml",
+            1,
+            [],
+            [
+                {
+                    borders: { top: false, bottom: false, left: false, right: false },
+                    numFmtId: 0,
+                    formatCode: "General",
+                    textStyle: { bold: false, italic: false, strike: false, underline: false },
+                },
+            ],
+            deps
+        );
+
+        expect(sheet.comments).toEqual([
+            { address: "A1", kind: "note", author: "Alice", text: "Legacy note", dateTime: "" },
+            {
+                address: "B2",
+                kind: "threaded",
+                author: "Bob",
+                text: "Threaded reply",
+                dateTime: "2026-07-02T10:00:00Z",
+            },
+        ]);
+    });
+});
