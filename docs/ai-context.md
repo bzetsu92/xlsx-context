@@ -138,11 +138,14 @@ Example with `maxTokens: 30` and `tableFormat: "records"`:
 
 Rules for the chunks:
 
-- The order on each sheet is tables, narratives, comments, then assets.
+- The order on each sheet is the reading order of the compact text: tables and narrative text
+  as `sections` lists them, so a caption stays next to its table. Comments, then assets follow.
 - A table chunk holds whole rows. It never splits a row.
 - Each table chunk repeats the sheet name and the table heading.
   In `rows` format, it also repeats the header row.
-- `source.range` covers the data rows in that chunk.
+- `source.range` points back to the content of the chunk:
+  a table chunk covers its data rows (`A3-C4`), a narrative chunk its row span (`4:8`),
+  and a comment or asset chunk its cells (`B3,D10`). An asset chunk also sets `anchor`.
 - A unit that is larger than the budget stays whole in its own chunk. Its `tokens` value is then above `maxTokens`.
 - The same input, options, and counter give the same chunks.
 

@@ -129,6 +129,45 @@ describe("planContextChunks()", () => {
         ).toBe(false);
     });
 
+    it("keeps captions next to their tables, in the order of the compact text", async () => {
+        const ir = await buildIr("table/table-basic-sample01.xlsx");
+        const chunks = planner().planContextChunks(ir);
+
+        expect(chunks.map((chunk) => [chunk.id, chunk.source.range])).toEqual([
+            ["s1/n/1", "1:2"],
+            ["s1/t001/1", "B4-F7"],
+            ["s1/n/2", "8:8"],
+            ["s1/t002/1", "B10-F13"],
+        ]);
+    });
+
+    it("follows compact text order and gives every chunk a source on every fixture", async () => {
+        const problems = [];
+        for (const fixturePath of listFixtures()) {
+            const ir = await buildIr(fixturePath);
+            const compact = aiCompactRenderer.renderCompactMarkdown(ir);
+            let position = 0;
+            for (const chunk of planner().planContextChunks(ir, { maxTokens: 64 })) {
+                const rangePattern = {
+                    table: /^[A-Z]+\d+-[A-Z]+\d+$/,
+                    narrative: /^\d+:\d+$/,
+                    comments: /^[A-Z]+\d+(,[A-Z]+\d+)*$/,
+                    assets: /^[A-Z]+\d+(,[A-Z]+\d+)*$/,
+                }[chunk.kind];
+                if (!rangePattern.test(chunk.source.range)) {
+                    problems.push(`${fixturePath} ${chunk.id}: range "${chunk.source.range}"`);
+                }
+                if (chunk.kind !== "table" && chunk.kind !== "narrative") continue;
+                // The last line of a body chunk must occur at or after the previous one in the compact text.
+                const lastLine = chunk.text.split("\n").at(-1);
+                const found = compact.indexOf(lastLine, position);
+                if (found < 0) problems.push(`${fixturePath} ${chunk.id}: out of order`);
+                else position = found;
+            }
+        }
+        expect(problems).toEqual([]);
+    }, 120000);
+
     it("rejects a non-positive budget", async () => {
         const ir = await buildIr("table/table-basic-sample01.xlsx");
         expect(() => planner().planContextChunks(ir, { maxTokens: 0 })).toThrow("maxTokens must be a positive number");

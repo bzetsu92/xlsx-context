@@ -243,4 +243,14 @@ describe("buildWorkbookIR()", () => {
         }
         expect(checked).toBeGreaterThan(0);
     });
+
+    it("orders comments by row, then column", async () => {
+        const workbook = await parseFixture(core, "table/table-basic-sample01.xlsx");
+        const comment = (address) => ({ address, kind: "note", author: "", text: address });
+        workbook.sheets[0].comments = [comment("B10"), comment("C2"), comment("B2"), comment("AA1")];
+
+        const ir = aiWorkbookIr.buildWorkbookIR(workbook);
+
+        expect(ir.sheets[0].comments.map((entry) => entry.address)).toEqual(["AA1", "B2", "C2", "B10"]);
+    });
 });

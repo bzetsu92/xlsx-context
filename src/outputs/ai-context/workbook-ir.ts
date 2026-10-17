@@ -21,7 +21,7 @@ import type {
     IrTable,
     WorkbookIR,
 } from "./types.js";
-import { colToLetters, formatRange } from "../../structure/addresses/address-utils.js";
+import { colToLetters, formatRange, parseCellAddress } from "../../structure/addresses/address-utils.js";
 import { findChartSourceTables } from "../../structure/layout/chart-sources.js";
 import { toMarkdownLinkTarget } from "../../structure/formatting/link-target.js";
 import { extractNarrativeBlocks } from "../../structure/layout/narrative-blocks.js";
@@ -255,7 +255,11 @@ function toIrSheet(sheet: ParsedSheet, options: AiIrOptions = {}): IrSheet {
         .filter((section) => section.length > 0);
     const comments = sheet.comments
         .slice()
-        .sort((left, right) => (left.address < right.address ? -1 : left.address > right.address ? 1 : 0))
+        .sort((left, right) => {
+            const a = parseCellAddress(left.address);
+            const b = parseCellAddress(right.address);
+            return a.row - b.row || a.col - b.col;
+        })
         .map((comment) => ({
             address: comment.address,
             kind: comment.kind,

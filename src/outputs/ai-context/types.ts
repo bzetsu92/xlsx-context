@@ -26,9 +26,12 @@ export type ContextBudget = {
 /** Provenance pointer back to the source workbook location. */
 export type SourceReference = {
     sheet: string;
-    /** A1-style range for tables, empty for non-tabular blocks. */
+    /**
+     * Excel reference of the content. Tables: a cell range such as B4-E8.
+     * Narrative text: a row span such as 4:8. Comments and assets: cells such as B3,D10.
+     */
     range: string;
-    /** Anchor cell for assets, empty when not applicable. */
+    /** Anchor cell of the first asset in an asset chunk, empty otherwise. */
     anchor: string;
 };
 
@@ -211,7 +214,7 @@ export type IrSheet = {
      * Lists tables and narratives in order, so captions stay next to tables.
      */
     sections: IrSectionEntry[][];
-    /** Cell comments in address order. */
+    /** Cell comments in row, then column order. */
     comments: IrComment[];
     /** Charts in drawing order. */
     charts: IrChart[];

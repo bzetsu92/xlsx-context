@@ -1,4 +1,13 @@
-import type { ChunkOptions, ContextChunk, IrSheet, IrTable, TableFormat, TokenCounter, WorkbookIR } from "./types.js";
+import type {
+    ChunkOptions,
+    ContextChunk,
+    IrNarrative,
+    IrSheet,
+    IrTable,
+    TableFormat,
+    TokenCounter,
+    WorkbookIR,
+} from "./types.js";
 import {
     renderCompactAssets,
     renderCompactComment,
@@ -93,25 +102,59 @@ function chunkTable(
     );
 }
 
+/** One packable piece of sheet text with the cells or rows it came from. */
+type SourcedUnit = {
+    text: string;
+    /** Excel reference of the piece: a row span such as 4:8, or a cell such as B3. */
+    ref: string;
+};
+
+/** Joins the refs of a run. Row spans merge into one span. Cells become a list such as B3,D10. */
+function joinRefs(units: SourcedUnit[]): string {
+    const spans = units.map((unit) => unit.ref.match(/^(\d+):(\d+)$/));
+    if (spans.length > 0 && spans.every(Boolean)) {
+        const first = Math.min(...spans.map((span) => Number(span![1])));
+        const last = Math.max(...spans.map((span) => Number(span![2])));
+        return `${first}:${last}`;
+    }
+    return [...new Set(units.map((unit) => unit.ref).filter(Boolean))].join(",");
+}
+
 /** Treats narrative blocks as units. A block over budget falls back to its lines. */
-function narrativeUnits(sheet: IrSheet, maxTokens: number, counter: TokenCounter): string[] {
-    const units: string[] = [];
-    for (const narrative of sheet.narratives) {
+function narrativeUnits(narratives: IrNarrative[], maxTokens: number, counter: TokenCounter): SourcedUnit[] {
+    const units: SourcedUnit[] = [];
+    for (const narrative of narratives) {
         const block = renderCompactNarrative(narrative);
         if (!block) continue;
+        const lastRow = Math.max(narrative.startRow, ...narrative.items.map((item) => item.row));
+        const ref = `${narrative.startRow}:${lastRow}`;
         if (counter.count(block) <= maxTokens) {
-            units.push(block);
+            units.push({ text: block, ref });
         } else {
-            units.push(...block.split("\n").filter((line) => line.trim() !== ""));
+            // Rendered lines do not map one to one to items, so each line keeps the block span.
+            for (const line of block.split("\n")) {
+                if (line.trim() !== "") units.push({ text: line, ref });
+            }
         }
     }
     return units;
 }
 
+/** Lists asset texts with their anchor cells, in the order of renderCompactAssets. */
+function assetUnits(sheet: IrSheet): SourcedUnit[] {
+    const anchors = [
+        ...(sheet.charts ?? []).map((chart) => chart.anchor),
+        ...(sheet.shapes ?? []).map((shape) => shape.anchor),
+        ...(sheet.images ?? []).map((image) => image.anchor),
+    ];
+    return renderCompactAssets(sheet).map((text, index) => ({ text, ref: anchors[index] || "" }));
+}
+
 function chunkSheetText(
     sheet: IrSheet,
     kind: "narrative" | "comments" | "assets",
-    units: string[],
+    units: SourcedUnit[],
+    firstNumber: number,
     maxTokens: number,
     counter: TokenCounter
 ): ContextChunk[] {
@@ -121,20 +164,60 @@ function chunkSheetText(
         assets: `# ${sheet.name}\n## Charts, shapes, and images`,
     }[kind];
     const idPart = { narrative: "n", comments: "c", assets: "a" }[kind];
-    return packUnits(prefix, units, maxTokens, counter).map((run, index) => ({
-        id: `s${sheet.index}/${idPart}/${index + 1}`,
-        kind,
-        sheet: sheet.name,
-        tableId: "",
-        source: { sheet: sheet.name, range: "", anchor: "" },
-        text: run.text,
-        tokens: run.tokens,
-    }));
+    const texts = units.map((unit) => unit.text);
+    return packUnits(prefix, texts, maxTokens, counter).map((run, index) => {
+        const runUnits = units.slice(run.start, run.end);
+        return {
+            id: `s${sheet.index}/${idPart}/${firstNumber + index}`,
+            kind,
+            sheet: sheet.name,
+            tableId: "",
+            source: {
+                sheet: sheet.name,
+                range: joinRefs(runUnits),
+                anchor: kind === "assets" ? runUnits[0]?.ref || "" : "",
+            },
+            text: run.text,
+            tokens: run.tokens,
+        };
+    });
+}
+
+type BodyEntry = { kind: "table"; table: IrTable } | { kind: "narrative"; narrative: IrNarrative };
+
+/**
+ * Lists tables and narrative blocks in reading order, as the compact text does.
+ * Follows sheet.sections, then adds anything the sections miss.
+ */
+function bodyInReadingOrder(sheet: IrSheet): BodyEntry[] {
+    const entries: BodyEntry[] = [];
+    const seenTables = new Set<IrTable>();
+    const seenNarratives = new Set<IrNarrative>();
+    const pushTable = (table: IrTable | undefined) => {
+        if (!table || seenTables.has(table)) return;
+        seenTables.add(table);
+        entries.push({ kind: "table", table });
+    };
+    const pushNarrative = (narrative: IrNarrative | undefined) => {
+        if (!narrative || seenNarratives.has(narrative)) return;
+        seenNarratives.add(narrative);
+        entries.push({ kind: "narrative", narrative });
+    };
+    for (const section of sheet.sections ?? []) {
+        for (const entry of section) {
+            if (entry.kind === "table") pushTable(sheet.tables.find((table) => table.id === entry.id));
+            else pushNarrative(sheet.narratives[entry.index]);
+        }
+    }
+    sheet.tables.forEach(pushTable);
+    sheet.narratives.forEach(pushNarrative);
+    return entries;
 }
 
 /**
  * Splits workbook IR into retrieval chunks in reading order.
- * Orders tables, narrative text, comments, charts, shapes, and images per sheet.
+ * Per sheet: tables and narrative text in the order of the compact text, then comments,
+ * then charts, shapes, and images. Every chunk points back to its rows or cells.
  * Stays deterministic for the same IR, options, and counter.
  */
 function planContextChunks(ir: WorkbookIR, options: ChunkOptions = {}): ContextChunk[] {
@@ -145,19 +228,40 @@ function planContextChunks(ir: WorkbookIR, options: ChunkOptions = {}): ContextC
     const counter = options.counter || createCharEstimateCounter();
     const chunks: ContextChunk[] = [];
     for (const sheet of ir.sheets) {
-        for (const table of sheet.tables) {
-            chunks.push(...chunkTable(sheet, table, options.tableFormat || "rows", maxTokens, counter));
-        }
-        chunks.push(
-            ...chunkSheetText(sheet, "narrative", narrativeUnits(sheet, maxTokens, counter), maxTokens, counter)
-        );
-        if (options.includeComments !== false) {
-            chunks.push(
-                ...chunkSheetText(sheet, "comments", sheet.comments.map(renderCompactComment), maxTokens, counter)
+        let pendingNarratives: IrNarrative[] = [];
+        let narrativeNumber = 1;
+        // Consecutive narrative blocks pack together. A table between them starts a new run.
+        const flushNarratives = () => {
+            const narrativeChunks = chunkSheetText(
+                sheet,
+                "narrative",
+                narrativeUnits(pendingNarratives, maxTokens, counter),
+                narrativeNumber,
+                maxTokens,
+                counter
             );
+            narrativeNumber += narrativeChunks.length;
+            chunks.push(...narrativeChunks);
+            pendingNarratives = [];
+        };
+        for (const entry of bodyInReadingOrder(sheet)) {
+            if (entry.kind === "narrative") {
+                pendingNarratives.push(entry.narrative);
+                continue;
+            }
+            flushNarratives();
+            chunks.push(...chunkTable(sheet, entry.table, options.tableFormat || "rows", maxTokens, counter));
+        }
+        flushNarratives();
+        if (options.includeComments !== false) {
+            const commentUnits = sheet.comments.map((comment) => ({
+                text: renderCompactComment(comment),
+                ref: comment.address,
+            }));
+            chunks.push(...chunkSheetText(sheet, "comments", commentUnits, 1, maxTokens, counter));
         }
         if (options.includeAssets !== false) {
-            chunks.push(...chunkSheetText(sheet, "assets", renderCompactAssets(sheet), maxTokens, counter));
+            chunks.push(...chunkSheetText(sheet, "assets", assetUnits(sheet), 1, maxTokens, counter));
         }
     }
     return chunks;
