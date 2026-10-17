@@ -348,6 +348,28 @@ describe("xlsx-context worksheet parser", () => {
         expect(() => sheet()).toThrow("xl/worksheets/sheet1.xml: Hyperlink ranges cover too many cells.");
     });
 
+    it("keeps cached text, error, and boolean formula results out of number formats", () => {
+        const deps = createDeps();
+        const percentStyle = {
+            borders: {},
+            numFmtId: 10,
+            formatCode: "0.0%",
+            textStyle: { bold: false, italic: false, strike: false, underline: false },
+        };
+        const read = (xml) =>
+            worksheetParser.extractCellOutputValue(
+                new DOMParser().parseFromString(xml, "application/xml").documentElement,
+                [],
+                percentStyle,
+                deps
+            ).outputValue;
+
+        expect(read('<c t="str"><f>A1</f><v>0x10</v></c>')).toBe("0x10");
+        expect(read('<c t="e"><f>1/0</f><v>#DIV/0!</v></c>')).toBe("#DIV/0!");
+        expect(read('<c t="b"><f>TRUE</f><v>1</v></c>')).toBe("TRUE");
+        expect(read("<c><f>A1/2</f><v>0.5</v></c>")).toBe("50.0%");
+    });
+
     it("parses notes and threaded comments from worksheet relationships", () => {
         const api = worksheetParser;
         const deps = createDeps();

@@ -455,7 +455,15 @@ function extractCellOutputValue(
             };
         }
         if (valueNode) {
-            const formattedValue = deps.formatCellDisplayValue(valueText, cellStyle);
+            // Number formats apply to numeric results only, as in the non-formula branch below.
+            const formattedValue =
+                type === "str" || type === "e"
+                    ? valueText
+                    : type === "b"
+                      ? valueText === "1"
+                          ? "TRUE"
+                          : "FALSE"
+                      : deps.formatCellDisplayValue(valueText, cellStyle);
             return {
                 valueType: type || "formula",
                 rawValue: valueText,
