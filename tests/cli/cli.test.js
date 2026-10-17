@@ -107,7 +107,8 @@ describe("xlsx-context cli", () => {
             cwd: ROOT,
         });
 
-        expect(result.stdout.trim()).toBe("1.3.0");
+        const { version } = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+        expect(result.stdout.trim()).toBe(version);
         expect(result.stderr).toBe("");
     });
 
