@@ -6,7 +6,9 @@ import * as core from "../../../src/core.ts";
 import * as aiCompactRenderer from "../../../src/outputs/ai-context/compact-renderer.ts";
 import * as aiTokenCounter from "../../../src/outputs/ai-context/token-counter.ts";
 import * as aiWorkbookIr from "../../../src/outputs/ai-context/workbook-ir.ts";
-import { parseFixture, listFixtures, containsAnswer, toNaiveCsv } from "./helpers.js";
+import { parseFixture, listFixtures, containsAnswer, normalize, toNaiveCsv } from "./helpers.js";
+import * as aiChunkPlanner from "../../../src/outputs/ai-context/chunk-planner.ts";
+import { parseCellAddress } from "../../../src/structure/addresses/address-utils.ts";
 
 /*
  * Answerability benchmark: gold questions with known answers derived
@@ -46,6 +48,24 @@ const QUESTIONS = [
         ],
     },
 ];
+
+/** True when the chunk source points at the cell. A table chunk also covers its repeated header row. */
+function chunkCoversCell(ir, chunk, cell) {
+    if (chunk.source.sheet !== cell.sheet) return false;
+    const range = chunk.source.range;
+    const rowSpan = range.match(/^(\d+):(\d+)$/);
+    if (rowSpan) return cell.row >= Number(rowSpan[1]) && cell.row <= Number(rowSpan[2]);
+    const rect = range.match(/^([A-Z]+\d+)-([A-Z]+\d+)$/);
+    if (rect) {
+        const start = parseCellAddress(rect[1]);
+        const end = parseCellAddress(rect[2]);
+        const table = ir.sheets.find((sheet) => sheet.name === chunk.sheet)?.tables.find((t) => t.id === chunk.tableId);
+        const headerRow = table?.hasHeader ? parseCellAddress(table.range.split("-")[0]).row : -1;
+        const inCols = cell.col >= start.col && cell.col <= end.col;
+        return inCols && ((cell.row >= start.row && cell.row <= end.row) || cell.row === headerRow);
+    }
+    return range.split(",").includes(cell.address);
+}
 
 describe("compact AI context on fixtures", () => {
     it("keeps every gold answer in compact output", async () => {
@@ -96,6 +116,40 @@ describe("compact AI context on fixtures", () => {
         }
         // Opt-in report, so a normal run stays quiet.
         if (process.env.QA_REPORT) console.log(JSON.stringify(rows, null, 1));
+    }, 120000);
+
+    it("finds every gold answer in a chunk whose source covers the answer cell", async () => {
+        // Small chunks, so retrieval must pick the right piece, as in a real RAG step.
+        const problems = [];
+        for (const group of QUESTIONS) {
+            const workbook = await parseFixture(core, ...group.fixture);
+            const ir = aiWorkbookIr.buildWorkbookIR(workbook);
+            const chunks = aiChunkPlanner.planContextChunks(ir, { maxTokens: 64 });
+            for (const ask of group.asks) {
+                for (const answer of ask.answers) {
+                    const label = `${group.fixture.join("/")} [${ask.question}]: ${answer}`;
+                    const hits = chunks.filter((chunk) => containsAnswer(chunk.text, answer));
+                    if (hits.length === 0) {
+                        problems.push(`${label}: in no chunk`);
+                        continue;
+                    }
+                    // Answers that are cell values must be cited at their cell. Ranges and chart refs are not cells.
+                    const cells = workbook.sheets.flatMap((sheet) =>
+                        sheet.cells
+                            .filter((cell) => normalize(cell.outputValue) === normalize(answer))
+                            .map((cell) => ({ sheet: sheet.name, row: cell.row, col: cell.col, address: cell.address }))
+                    );
+                    if (cells.length === 0) continue;
+                    const cited = hits.some((chunk) => cells.some((cell) => chunkCoversCell(ir, chunk, cell)));
+                    if (!cited) {
+                        problems.push(
+                            `${label}: ${hits.map((chunk) => `${chunk.id}@${chunk.source.range}`).join(" ")}`
+                        );
+                    }
+                }
+            }
+        }
+        expect(problems).toEqual([]);
     }, 120000);
 
     it("renders compact output smaller than faithful markdown on every fixture", async () => {
