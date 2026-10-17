@@ -67,26 +67,63 @@ function toDosDateTime(
     };
 }
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
+/** Thrown when an entry inflates past its declared size. */
+class InflatedSizeError extends Error {}
+
+/**
+ * Inflates one raw deflate stream. Stops as soon as the output passes maxBytes, so a
+ * small archive that declares false sizes cannot fill memory (zip bomb).
+ */
+async function inflateRaw(data: Uint8Array, maxBytes: number): Promise<Uint8Array> {
     // Use synchronous zlib on Node. It skips stream allocation per entry.
     const nodeRequire = getNodeRequire();
     if (nodeRequire) {
-        const zlib = nodeRequire("node:zlib") as { inflateRawSync: (input: Uint8Array) => Uint8Array };
-        // Copy into a plain, unpooled Uint8Array. Bulk copy beats per-element copy.
-        return new Uint8Array(zlib.inflateRawSync(data));
-    }
-    if (typeof DecompressionStream === "function") {
+        const zlib = nodeRequire("node:zlib") as {
+            inflateRawSync: (input: Uint8Array, options: { maxOutputLength: number }) => Uint8Array;
+        };
         try {
-            const stream = new Blob([data as unknown as BlobPart])
-                .stream()
-                .pipeThrough(new DecompressionStream("deflate-raw"));
-            const buffer = await new Response(stream).arrayBuffer();
-            return new Uint8Array(buffer);
-        } catch (_error) {
-            // Fall through when the runtime lacks deflate-raw support. The throw below reports it.
+            // maxOutputLength must be at least 1. An empty entry that inflates to 1 byte fails the size check.
+            const inflated = zlib.inflateRawSync(data, { maxOutputLength: Math.max(1, maxBytes) });
+            // Copy into a plain, unpooled Uint8Array. Bulk copy beats per-element copy.
+            return new Uint8Array(inflated);
+        } catch (error) {
+            if ((error as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") throw new InflatedSizeError();
+            throw error;
         }
     }
-    throw new Error("This environment does not support ZIP deflate decompression.");
+    let stream: ReadableStream<Uint8Array> | null = null;
+    if (typeof DecompressionStream === "function") {
+        try {
+            stream = new Blob([data as unknown as BlobPart])
+                .stream()
+                .pipeThrough(new DecompressionStream("deflate-raw"));
+        } catch (_error) {
+            // The runtime lacks deflate-raw support. The throw below reports it.
+        }
+    }
+    if (!stream) {
+        throw new Error("This environment does not support ZIP deflate decompression.");
+    }
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > maxBytes) {
+            await reader.cancel();
+            throw new InflatedSizeError();
+        }
+        chunks.push(value);
+    }
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        output.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return output;
 }
 
 function readUint16(data: Uint8Array, offset: number): number {
@@ -175,15 +212,22 @@ async function readEntryData(data: Uint8Array, entry: ZipCentralEntry): Promise<
     if (entry.method === 0) {
         return compressed;
     }
-    const inflated = await inflateRaw(compressed);
+    const sizeMismatch = new Error(`${entry.path}: Deflated ZIP entry size mismatch.`);
+    let inflated: Uint8Array;
+    try {
+        inflated = await inflateRaw(compressed, entry.uncompressedSize);
+    } catch (error) {
+        throw error instanceof InflatedSizeError ? sizeMismatch : error;
+    }
     if (inflated.length !== entry.uncompressedSize) {
-        throw new Error(`${entry.path}: Deflated ZIP entry size mismatch.`);
+        throw sizeMismatch;
     }
     return inflated;
 }
 
 // Rejects archives that no spreadsheet can produce. Sizes come from the
 // central directory, so oversized packages fail before any inflation.
+// Each entry also stops inflating at its declared size (see inflateRaw).
 const MAX_ZIP_ENTRIES = 20000;
 const MAX_ZIP_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 

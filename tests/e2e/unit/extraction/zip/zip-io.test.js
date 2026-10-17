@@ -1,6 +1,44 @@
 import { describe, expect, it } from "vitest";
 import * as zipIo from "../../../../../src/extraction/zip/zip-io.ts";
 
+// Builds a one-entry deflated ZIP. declaredSize may lie, as in a zip bomb.
+function createDeflatedZip(name, compressed, declaredSize) {
+    const nameBytes = new TextEncoder().encode(name);
+    const local = new Uint8Array(30 + nameBytes.length);
+    const localView = new DataView(local.buffer);
+    localView.setUint32(0, 0x04034b50, true);
+    localView.setUint16(4, 20, true);
+    localView.setUint16(8, 8, true);
+    localView.setUint32(18, compressed.length, true);
+    localView.setUint32(22, declaredSize, true);
+    localView.setUint16(26, nameBytes.length, true);
+    local.set(nameBytes, 30);
+    const central = new Uint8Array(46 + nameBytes.length);
+    const centralView = new DataView(central.buffer);
+    centralView.setUint32(0, 0x02014b50, true);
+    centralView.setUint16(4, 20, true);
+    centralView.setUint16(6, 20, true);
+    centralView.setUint16(10, 8, true);
+    centralView.setUint32(20, compressed.length, true);
+    centralView.setUint32(24, declaredSize, true);
+    centralView.setUint16(28, nameBytes.length, true);
+    centralView.setUint32(42, 0, true);
+    central.set(nameBytes, 46);
+    const eocd = new Uint8Array(22);
+    const eocdView = new DataView(eocd.buffer);
+    eocdView.setUint32(0, 0x06054b50, true);
+    eocdView.setUint16(8, 1, true);
+    eocdView.setUint16(10, 1, true);
+    eocdView.setUint32(12, central.length, true);
+    eocdView.setUint32(16, local.length + compressed.length, true);
+    const zip = new Uint8Array(local.length + compressed.length + central.length + eocd.length);
+    zip.set(local, 0);
+    zip.set(compressed, local.length);
+    zip.set(central, local.length + compressed.length);
+    zip.set(eocd, local.length + compressed.length + central.length);
+    return zip.buffer;
+}
+
 describe("xlsx-context zip io", () => {
     it("round-trips stored zip entries", async () => {
         const api = zipIo;
@@ -182,6 +220,37 @@ describe("xlsx-context zip io", () => {
             expect(new TextDecoder().decode(extracted.get(fileName))).toBe("fallback");
         } finally {
             globalThis.DecompressionStream = originalDecompressionStream;
+        }
+    });
+    it("stops inflating an entry at its declared size (zip bomb)", async () => {
+        const zlib = globalThis.__xlsxContextNodeRequire("node:zlib");
+        const compressed = Uint8Array.from(zlib.deflateRawSync(new Uint8Array(64 * 1024 * 1024)));
+        const before = process.memoryUsage().rss;
+
+        await expect(zipIo.unzipEntries(createDeflatedZip("xl/media/pad.bin", compressed, 1))).rejects.toThrow(
+            "xl/media/pad.bin: Deflated ZIP entry size mismatch."
+        );
+        expect(process.memoryUsage().rss - before).toBeLessThan(32 * 1024 * 1024);
+    });
+
+    it("stops a deflate-raw stream at the declared size when node zlib is unavailable", async () => {
+        const zlib = globalThis.__xlsxContextNodeRequire("node:zlib");
+        const size = 128 * 1024 * 1024;
+        const compressed = Uint8Array.from(zlib.deflateRawSync(new Uint8Array(size)));
+        const originalRequire = globalThis.__xlsxContextNodeRequire;
+        globalThis.__xlsxContextNodeRequire = undefined;
+
+        try {
+            const before = process.memoryUsage().rss;
+            await expect(zipIo.unzipEntries(createDeflatedZip("a.bin", compressed, 10))).rejects.toThrow(
+                "a.bin: Deflated ZIP entry size mismatch."
+            );
+            expect(process.memoryUsage().rss - before).toBeLessThan(32 * 1024 * 1024);
+            const small = Uint8Array.from(zlib.deflateRawSync(new TextEncoder().encode("exact")));
+            const exact = await zipIo.unzipEntries(createDeflatedZip("b.txt", small, 5));
+            expect(new TextDecoder().decode(exact.get("b.txt"))).toBe("exact");
+        } finally {
+            globalThis.__xlsxContextNodeRequire = originalRequire;
         }
     });
 });
