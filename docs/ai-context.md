@@ -124,14 +124,14 @@ A chunk is a piece of the compact text that stands alone.
 | `text`    | The chunk text.                                           |
 | `tokens`  | The token count of `text`.                                |
 
-Example with `maxTokens: 30` and `tableFormat: "records"`:
+Example with `maxTokens: 60` and `tableFormat: "records"`:
 
 ```json
 {
     "id": "s1/t001/2",
     "kind": "table",
     "source": { "sheet": "Orders", "range": "A3-C4", "anchor": "" },
-    "tokens": 25,
+    "tokens": 56,
     "text": "# Orders\n## Table t001 (A1-C4)\n[A3] Order: 1002 | Customer: Globex\n[A4] Order: 1003 | Customer: Initech | Total: 75.50"
 }
 ```

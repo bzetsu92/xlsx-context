@@ -127,12 +127,12 @@ Builds the IR, the compact text, and the chunks in one call. Returns `AiContext`
 
 ### Counters
 
-| Function                           | Returns                 | Meaning                                                                       |
-| ---------------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
-| `createCharEstimateCounter()`      | `TokenCounter`          | The default. One token for each CJK character, one for four other characters. |
-| `createWhitespaceCounter()`        | `TokenCounter`          | Counts words. Do not use it for Japanese or Chinese text.                     |
-| `createEncoderCounter(encoder)`    | `TokenCounter`          | Wraps `{ name, encode(text) }`. The count is the length of the result.        |
-| `createTiktokenCounter(encoding?)` | `Promise<TokenCounter>` | Counts OpenAI tokens. Default encoding: `o200k_base`. Needs `js-tiktoken`.    |
+| Function                           | Returns                 | Meaning                                                                                                                                                           |
+| ---------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createCharEstimateCounter()`      | `TokenCounter`          | The default. One token for each CJK character, symbol, and line break, one for four other letters, one for three digits. Reads about 1.1x the `o200k_base` count. |
+| `createWhitespaceCounter()`        | `TokenCounter`          | Counts words. Do not use it for Japanese or Chinese text.                                                                                                         |
+| `createEncoderCounter(encoder)`    | `TokenCounter`          | Wraps `{ name, encode(text) }`. The count is the length of the result.                                                                                            |
+| `createTiktokenCounter(encoding?)` | `Promise<TokenCounter>` | Counts OpenAI tokens. Default encoding: `o200k_base`. Needs `js-tiktoken`.                                                                                        |
 
 A `TokenCounter` is `{ name: string, count(text: string): number }`.
 

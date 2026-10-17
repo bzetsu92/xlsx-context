@@ -66,7 +66,7 @@ Each chunk stands alone and points back to its source, so a retrieval step can c
     "kind": "table",
     "source": { "sheet": "chart-mixed", "range": "B4-E8", "anchor": "" },
     "text": "# chart-mixed\n## Table t001 (B3-E8)\n| 項目 | 売上 | 割引額 | 利益率 |\n| 2024年 | 13,568 | 1,000 | 25% |\n...",
-    "tokens": 53
+    "tokens": 121
 }
 ```
 
