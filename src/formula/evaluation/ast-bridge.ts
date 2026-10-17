@@ -1,3 +1,4 @@
+import type { FormulaEvaluationOptions } from "./evaluator.js";
 import { evaluateFormulaAst } from "./evaluator.js";
 import { parseFormula } from "../syntax/parser.js";
 type FormulaAstBridgeDeps = {
@@ -26,7 +27,8 @@ function createFormulaAstBridge(deps: FormulaAstBridgeDeps) {
             sheetName: string,
             rangeText: string
         ) => { rawValues: string[]; numericValues: number[] },
-        currentAddress?: string
+        currentAddress?: string,
+        options: FormulaEvaluationOptions = {}
     ): string | null {
         try {
             const ast = parseFormula(`=${expression}`);
@@ -115,6 +117,7 @@ function createFormulaAstBridge(deps: FormulaAstBridgeDeps) {
                     );
                 },
                 currentCellRef: currentAddress ? deps.normalizeFormulaAddress(currentAddress) : undefined,
+                date1904: options.date1904,
             });
             return serializeFormulaAstResult(evaluated);
         } catch (_error) {
@@ -184,6 +187,10 @@ function createFormulaAstBridge(deps: FormulaAstBridgeDeps) {
         }
         if (typeof value === "boolean") {
             return value ? "TRUE" : "FALSE";
+        }
+        if (typeof value === "number") {
+            // Excel stores 15 significant digits, so 0.1 + 0.2 reads as 0.3. It has no infinity.
+            return Number.isFinite(value) ? String(Number(value.toPrecision(15))) : "#NUM!";
         }
         return String(value);
     }

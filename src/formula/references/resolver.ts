@@ -1,3 +1,4 @@
+import type { FormulaEvaluationOptions } from "../evaluation/evaluator.js";
 import type {
     FormulaResolutionSource,
     ParsedCell,
@@ -46,7 +47,8 @@ type ResolverDeps = {
         currentSheetName: string,
         resolveCellValue: ResolveCellValue,
         resolveRangeValues?: ResolveRangeValues,
-        resolveRangeEntries?: ResolveRangeEntries
+        resolveRangeEntries?: ResolveRangeEntries,
+        options?: FormulaEvaluationOptions
     ) => string | null;
     parseQualifiedRangeReference: (text: string, currentSheetName: string) => ParsedRangeRef | null;
     findTopLevelOperatorIndex: (expression: string, operator: string) => number;
@@ -61,7 +63,8 @@ type ResolverDeps = {
         resolveCellValue: ResolveCellValue,
         resolveRangeValues?: ResolveRangeValues,
         resolveRangeEntries?: ResolveRangeEntries,
-        currentAddress?: string
+        currentAddress?: string,
+        options?: FormulaEvaluationOptions
     ) => { value: string; source: FormulaResolutionSource } | null;
     applyResolvedFormulaValue: (
         cell: ParsedCell,
@@ -110,6 +113,7 @@ function getUnresolvedFormulaCellValue(cell: ParsedCell): string {
 
 /** Builds cell and range resolvers with recursion guards for one workbook. */
 function buildFormulaResolver(workbook: ParsedWorkbook, deps: ResolverDeps) {
+    const options: FormulaEvaluationOptions = { date1904: workbook.dateSystem === "1904" };
     const sheetMap = new Map<string, ParsedSheet>();
     const cellMaps = new Map<string, Map<string, ParsedCell>>();
     const tableMap = new Map<string, ParsedTable>();
@@ -167,7 +171,8 @@ function buildFormulaResolver(workbook: ParsedWorkbook, deps: ResolverDeps) {
                         resolveCellValue,
                         undefined,
                         undefined,
-                        cell.address
+                        cell.address,
+                        options
                     );
                     if (result?.value != null) {
                         deps.applyResolvedFormulaValue(cell, result.value, result.source || "reference_lookup");
@@ -226,7 +231,14 @@ function buildFormulaResolver(workbook: ParsedWorkbook, deps: ResolverDeps) {
             const value = resolveCellValue(directRef.sheetName, directRef.address);
             return value === "" ? null : value;
         }
-        const scalar = deps.resolveScalarFormulaValue(formulaText.replace(/^=/, ""), sheetName, resolveCellValue);
+        const scalar = deps.resolveScalarFormulaValue(
+            formulaText.replace(/^=/, ""),
+            sheetName,
+            resolveCellValue,
+            undefined,
+            undefined,
+            options
+        );
         return scalar == null || scalar === "" ? null : scalar;
     }
 
@@ -256,7 +268,8 @@ function buildFormulaResolver(workbook: ParsedWorkbook, deps: ResolverDeps) {
                 sheetName,
                 resolveCellValue,
                 resolveRangeValues,
-                resolveRangeEntries
+                resolveRangeEntries,
+                options
             )
         );
         const colIndex =
@@ -267,7 +280,8 @@ function buildFormulaResolver(workbook: ParsedWorkbook, deps: ResolverDeps) {
                           sheetName,
                           resolveCellValue,
                           resolveRangeValues,
-                          resolveRangeEntries
+                          resolveRangeEntries,
+                          options
                       )
                   )
                 : 1;
@@ -359,7 +373,8 @@ function resolveSimpleFormulaReferences(workbook: ParsedWorkbook, deps: Resolver
                             resolver.resolveCellValue,
                             resolver.resolveRangeValues,
                             resolver.resolveRangeEntries,
-                            cell.address
+                            cell.address,
+                            { date1904: workbook.dateSystem === "1904" }
                         );
                         evaluated = result?.value ?? null;
                         evaluatedSource = result?.source ?? null;

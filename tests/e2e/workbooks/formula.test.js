@@ -720,6 +720,74 @@ describe("formula workbooks", () => {
         expect(summarySheet.cells.find((cell) => cell.address === "AQ1")?.outputValue).toBe("TRUE");
     });
 
+    it("matches Excel on uncached formula edge cases in both date systems", async () => {
+        // One sheet of formulas without cached values. workbookPr switches the date system.
+        const parse = (workbookPr, cellsXml) =>
+            core.parseWorkbook(
+                createStoredZip([
+                    {
+                        name: "[Content_Types].xml",
+                        data: `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"></Types>`,
+                    },
+                    {
+                        name: "xl/workbook.xml",
+                        data: `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${workbookPr}<sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+                    },
+                    {
+                        name: "xl/_rels/workbook.xml.rels",
+                        data: `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+                    },
+                    {
+                        name: "xl/worksheets/sheet1.xml",
+                        data: `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${cellsXml}</row></sheetData></worksheet>`,
+                    },
+                ]),
+                "edge.xlsx"
+            );
+        const formulas = {
+            A1: "1/0",
+            B1: "ROUND(-2.5,0)",
+            C1: "ROUND(1.005,2)",
+            D1: "0.1+0.2",
+            E1: '1&lt;"abc"',
+            F1: 'IFERROR(1/0,"fb")',
+            G1: 'IFERROR(#SPILL!,"fb")',
+            H1: "(1/0)+1",
+            I1: '"a"="A"',
+            J1: "DATE(2024,1,1)",
+            K1: 'TEXT(DATE(2024,1,1),"yyyy-mm-dd")',
+            L1: "DAY(DATE(2024,3,15))",
+            M1: "DATE(1900,1,1)",
+        };
+        const cellsXml = Object.entries(formulas)
+            .map(([address, formula]) => `<c r="${address}"><f>${formula}</f></c>`)
+            .join("");
+        const read = (workbook) =>
+            Object.fromEntries(workbook.sheets[0].cells.map((cell) => [cell.address, cell.outputValue]));
+
+        const book1900 = read(await parse("", cellsXml));
+        expect(book1900).toEqual({
+            A1: "#DIV/0!",
+            B1: "-3",
+            C1: "1.01",
+            D1: "0.3",
+            E1: "TRUE",
+            F1: "fb",
+            G1: "fb",
+            H1: "#DIV/0!",
+            I1: "TRUE",
+            J1: "45292",
+            K1: "2024-01-01",
+            L1: "15",
+            M1: "1",
+        });
+
+        const book1904 = read(await parse('<workbookPr date1904="1"/>', cellsXml));
+        expect(book1904.J1).toBe(String(45292 - 1462));
+        expect(book1904.K1).toBe("2024-01-01");
+        expect(book1904.L1).toBe("15");
+    });
+
     it("includes formula resolution source in diagnostics", () => {
         const api = core;
         const workbook = { name: "source.xlsx" };

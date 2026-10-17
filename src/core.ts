@@ -54,6 +54,7 @@ import { createOutputFileName, renderMarkdownTable } from "./outputs/markdown/ma
 import { createSheetMarkdown } from "./outputs/markdown/sheet-markdown.js";
 import { createFormulaEngine } from "./formula/evaluation/engine.js";
 import { createFormulaAstBridge } from "./formula/evaluation/ast-bridge.js";
+import type { FormulaEvaluationOptions } from "./formula/evaluation/evaluator.js";
 import { createFormulaReferenceUtils } from "./formula/references/reference-utils.js";
 import { resolveSimpleFormulaReferences } from "./formula/references/resolver.js";
 import {
@@ -139,14 +140,16 @@ const { tryResolveFormulaExpressionDetailed, resolveScalarFormulaValue } = creat
             sheetName: string,
             rangeText: string
         ) => { rawValues: string[]; numericValues: number[] },
-        currentAddress?: string
+        currentAddress?: string,
+        options?: FormulaEvaluationOptions
     ) =>
         tryResolveFormulaExpressionWithAst(
             expression,
             currentSheetName,
             resolveCellValue,
             resolveRangeEntries,
-            currentAddress
+            currentAddress,
+            options
         ),
     parseSimpleFormulaReference,
     parseSheetScopedDefinedNameReference,
@@ -159,7 +162,8 @@ function tryResolveFormulaExpressionWithAst(
     currentSheetName: string,
     resolveCellValue: ResolveCellValue,
     resolveRangeEntries?: ResolveRangeEntries,
-    currentAddress?: string
+    currentAddress?: string,
+    options?: FormulaEvaluationOptions
 ): string | null {
     return formulaAst.tryResolveFormulaExpressionWithAst(
         expression,
@@ -170,7 +174,8 @@ function tryResolveFormulaExpressionWithAst(
         resolveStructuredRangeRef,
         null,
         resolveRangeEntries,
-        currentAddress
+        currentAddress,
+        options
     );
 }
 

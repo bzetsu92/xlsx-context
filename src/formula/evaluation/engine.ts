@@ -1,4 +1,5 @@
 import type { FormulaResolutionSource } from "../../model/index.js";
+import type { FormulaEvaluationOptions } from "./evaluator.js";
 
 type FormulaEngineDeps = {
     getDefinedNameScalarValue: () => ((sheetName: string, name: string) => string | null) | null;
@@ -10,7 +11,8 @@ type FormulaEngineDeps = {
             sheetName: string,
             rangeText: string
         ) => { rawValues: string[]; numericValues: number[] },
-        currentAddress?: string
+        currentAddress?: string,
+        options?: FormulaEvaluationOptions
     ) => string | null;
     parseSimpleFormulaReference: (
         formulaText: string,
@@ -34,7 +36,8 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
             sheetName: string,
             rangeText: string
         ) => { rawValues: string[]; numericValues: number[] },
-        currentAddress?: string
+        currentAddress?: string,
+        options?: FormulaEvaluationOptions
     ): { value: string; source: FormulaResolutionSource } | null {
         const normalized = String(formulaText || "")
             .trim()
@@ -52,7 +55,8 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
             currentSheetName,
             resolveCellValue,
             resolveRangeEntries,
-            currentAddress
+            currentAddress,
+            options
         );
         if (astResolved != null) {
             return {
@@ -72,7 +76,8 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
             sheetName: string,
             rangeText: string
         ) => { rawValues: string[]; numericValues: number[] },
-        currentAddress?: string
+        currentAddress?: string,
+        options?: FormulaEvaluationOptions
     ): string | null {
         return (
             tryResolveFormulaExpressionDetailed(
@@ -81,7 +86,8 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
                 resolveCellValue,
                 resolveRangeValues,
                 resolveRangeEntries,
-                currentAddress
+                currentAddress,
+                options
             )?.value ?? null
         );
     }
@@ -93,7 +99,11 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
         currentSheetName: string,
         resolveCellValue: (sheetName: string, address: string) => string,
         resolveRangeValues?: (sheetName: string, rangeText: string) => number[],
-        resolveRangeEntries?: (sheetName: string, rangeText: string) => { rawValues: string[]; numericValues: number[] }
+        resolveRangeEntries?: (
+            sheetName: string,
+            rangeText: string
+        ) => { rawValues: string[]; numericValues: number[] },
+        options?: FormulaEvaluationOptions
     ): string | null {
         const trimmed = String(expression || "").trim();
         if (!trimmed) return null;
@@ -125,7 +135,9 @@ function createFormulaEngine(deps: FormulaEngineDeps) {
             currentSheetName,
             resolveCellValue,
             resolveRangeValues,
-            resolveRangeEntries
+            resolveRangeEntries,
+            undefined,
+            options
         );
     }
 

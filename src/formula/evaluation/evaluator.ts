@@ -1,7 +1,9 @@
 import { colToLetters, lettersToCol } from "../../structure/addresses/address-utils.js";
 import {
     datePartsToExcelSerial,
+    excelSerialToDateParts as serialToCalendarParts,
     formatTextFunctionValue,
+    isDateFormatCode,
     parseDateLikeParts,
 } from "../../structure/formatting/cell-format.js";
 import type { FormulaAstNode } from "../syntax/ast-types.js";
@@ -15,7 +17,18 @@ interface EvaluateFormulaAstContext {
     resolveSpill?: (ref: string, sheet: string | null) => unknown;
     currentDate?: Date;
     currentCellRef?: string;
+    /** True when the workbook counts dates from 1904-01-01. */
+    date1904?: boolean;
 }
+
+/** Days between the 1900 and 1904 date systems. */
+const DATE_1904_OFFSET = 1462;
+
+/** Workbook settings that change formula results. */
+type FormulaEvaluationOptions = {
+    /** True when the workbook counts dates from 1904-01-01. */
+    date1904?: boolean;
+};
 
 type FormulaFunctionEvaluator = (args: FormulaAstNode[], context: EvaluateFormulaAstContext) => unknown;
 
@@ -111,6 +124,7 @@ function evaluateIntersectionAst(
 }
 
 function evaluateUnaryOp(operator: string, operand: unknown) {
+    if (isFormulaError(operand)) return operand;
     const numericValue = toNumber(operand);
     if (operator === "+") {
         return numericValue;
@@ -122,6 +136,7 @@ function evaluateUnaryOp(operator: string, operand: unknown) {
 }
 
 function evaluatePostfixOp(operator: string, operand: unknown) {
+    if (isFormulaError(operand)) return operand;
     if (operator === "%") {
         return toNumber(operand) / 100;
     }
@@ -129,6 +144,8 @@ function evaluatePostfixOp(operator: string, operand: unknown) {
 }
 
 function evaluateBinaryOp(operator: string, left: unknown, right: unknown) {
+    if (isFormulaError(left)) return left;
+    if (isFormulaError(right)) return right;
     switch (operator) {
         case "+":
             return toNumber(left) + toNumber(right);
@@ -136,8 +153,10 @@ function evaluateBinaryOp(operator: string, left: unknown, right: unknown) {
             return toNumber(left) - toNumber(right);
         case "*":
             return toNumber(left) * toNumber(right);
-        case "/":
-            return toNumber(left) / toNumber(right);
+        case "/": {
+            const divisor = toNumber(right);
+            return divisor === 0 ? "#DIV/0!" : toNumber(left) / divisor;
+        }
         case "&":
             return `${toText(left)}${toText(right)}`;
         case "=":
@@ -338,7 +357,7 @@ function evaluateDate(args: FormulaAstNode[], context: EvaluateFormulaAstContext
     const year = toNumber(evaluateFormulaAst(args[0], context));
     const month = toNumber(evaluateFormulaAst(args[1], context));
     const day = toNumber(evaluateFormulaAst(args[2], context));
-    return excelSerialFromDate(year, month, day);
+    return excelSerialFromDate(year, month, day, context.date1904);
 }
 
 function evaluateValue(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
@@ -350,7 +369,7 @@ function evaluateValue(args: FormulaAstNode[], context: EvaluateFormulaAstContex
     if (!text) {
         return 0;
     }
-    const dateValue = parseDateLikeString(text);
+    const dateValue = parseDateLikeString(text, context.date1904);
     if (dateValue !== null) {
         return dateValue;
     }
@@ -366,14 +385,16 @@ function evaluateRound(args: FormulaAstNode[], context: EvaluateFormulaAstContex
     const value = toNumber(evaluateFormulaAst(args[0], context));
     const digits = args[1] ? Math.trunc(toNumber(evaluateFormulaAst(args[1], context))) : 0;
     const factor = Math.pow(10, digits);
-    const scaled = value * factor;
+    // Excel rounds half away from zero. toPrecision(15) drops binary noise, so 1.005 * 100 reads as 100.5.
+    const scaled = Number((Math.abs(value) * factor).toPrecision(15));
+    const sign = value < 0 ? -1 : 1;
     if (mode === "round") {
-        return Math.round(scaled) / factor;
+        return (sign * Math.round(scaled)) / factor;
     }
     if (mode === "up") {
-        return (scaled >= 0 ? Math.ceil(scaled) : Math.floor(scaled)) / factor;
+        return (sign * Math.ceil(scaled)) / factor;
     }
-    return (scaled >= 0 ? Math.floor(scaled) : Math.ceil(scaled)) / factor;
+    return (sign * Math.floor(scaled)) / factor;
 }
 
 function evaluateInt(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
@@ -655,7 +676,11 @@ function evaluateText(args: FormulaAstNode[], context: EvaluateFormulaAstContext
     const value = evaluateFormulaAst(args[0], context);
     const formatText = toText(evaluateFormulaAst(args[1], context));
     // Uses the shared cell-format formatter first. TEXT() follows the same number and date rules.
-    const shared = formatTextFunctionValue(toText(value), formatText);
+    const sharedInput =
+        context.date1904 && typeof value === "number" && isDateFormatCode(formatText)
+            ? String(value + DATE_1904_OFFSET)
+            : toText(value);
+    const shared = formatTextFunctionValue(sharedInput, formatText);
     if (shared !== null) {
         return shared;
     }
@@ -681,7 +706,7 @@ function evaluateText(args: FormulaAstNode[], context: EvaluateFormulaAstContext
     }
 
     if (format === "yyyy/mm/dd" || format === "yyyy-mm-dd") {
-        const parts = excelSerialToDateParts(toNumber(value));
+        const parts = excelSerialToDateParts(toNumber(value), context.date1904);
         const separator = format.includes("/") ? "/" : "-";
         const pad2 = (part: number) => String(part).padStart(2, "0");
         return `${parts.year}${separator}${pad2(parts.month)}${separator}${pad2(parts.day)}`;
@@ -724,11 +749,11 @@ function escapeRegExp(value: string): string {
 
 function evaluateToday(context: EvaluateFormulaAstContext) {
     const now = context.currentDate ?? new Date();
-    return excelSerialFromDate(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate());
+    return excelSerialFromDate(now.getUTCFullYear(), now.getUTCMonth() + 1, now.getUTCDate(), context.date1904);
 }
 
 function evaluateWeekday(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const serial = toNumber(evaluateFormulaAst(args[0], context));
+    const serial = toNumber(evaluateFormulaAst(args[0], context)) + (context.date1904 ? DATE_1904_OFFSET : 0);
     const returnType = args[1] ? Math.max(1, Math.floor(toNumber(evaluateFormulaAst(args[1], context)))) : 1;
     const excelEpoch = Date.UTC(1899, 11, 30);
     const utcDate = new Date(excelEpoch + Math.floor(serial) * 86400000);
@@ -747,7 +772,7 @@ function evaluateWeekday(args: FormulaAstNode[], context: EvaluateFormulaAstCont
 
 function evaluateDateValue(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
     const text = toText(evaluateFormulaAst(args[0], context)).trim();
-    const dateValue = parseDateLikeString(text);
+    const dateValue = parseDateLikeString(text, context.date1904);
     if (dateValue === null) {
         throw new Error(`Unsupported DATEVALUE input: ${text}`);
     }
@@ -808,18 +833,18 @@ function evaluateReplace(args: FormulaAstNode[], context: EvaluateFormulaAstCont
 }
 
 function evaluateDay(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context));
-    return excelSerialToDateParts(serial).day;
+    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context), context.date1904);
+    return excelSerialToDateParts(serial, context.date1904).day;
 }
 
 function evaluateMonth(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context));
-    return excelSerialToDateParts(serial).month;
+    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context), context.date1904);
+    return excelSerialToDateParts(serial, context.date1904).month;
 }
 
 function evaluateYear(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context));
-    return excelSerialToDateParts(serial).year;
+    const serial = coerceDateSerial(evaluateFormulaAst(args[0], context), context.date1904);
+    return excelSerialToDateParts(serial, context.date1904).year;
 }
 
 function evaluateSubtotal(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
@@ -957,19 +982,29 @@ function evaluateRow(args: FormulaAstNode[], context: EvaluateFormulaAstContext)
 }
 
 function evaluateEDate(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const startSerial = coerceDateSerial(evaluateFormulaAst(args[0], context));
+    const startSerial = coerceDateSerial(evaluateFormulaAst(args[0], context), context.date1904);
     const months = Math.trunc(toNumber(evaluateFormulaAst(args[1], context)));
-    const parts = excelSerialToDateParts(startSerial);
+    const parts = excelSerialToDateParts(startSerial, context.date1904);
     const jsDate = new Date(Date.UTC(parts.year, parts.month - 1 + months, parts.day));
-    return excelSerialFromDate(jsDate.getUTCFullYear(), jsDate.getUTCMonth() + 1, jsDate.getUTCDate());
+    return excelSerialFromDate(
+        jsDate.getUTCFullYear(),
+        jsDate.getUTCMonth() + 1,
+        jsDate.getUTCDate(),
+        context.date1904
+    );
 }
 
 function evaluateEoMonth(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
-    const startSerial = coerceDateSerial(evaluateFormulaAst(args[0], context));
+    const startSerial = coerceDateSerial(evaluateFormulaAst(args[0], context), context.date1904);
     const months = Math.trunc(toNumber(evaluateFormulaAst(args[1], context)));
-    const parts = excelSerialToDateParts(startSerial);
+    const parts = excelSerialToDateParts(startSerial, context.date1904);
     const jsDate = new Date(Date.UTC(parts.year, parts.month + months, 0));
-    return excelSerialFromDate(jsDate.getUTCFullYear(), jsDate.getUTCMonth() + 1, jsDate.getUTCDate());
+    return excelSerialFromDate(
+        jsDate.getUTCFullYear(),
+        jsDate.getUTCMonth() + 1,
+        jsDate.getUTCDate(),
+        context.date1904
+    );
 }
 
 function evaluateCountIf(args: FormulaAstNode[], context: EvaluateFormulaAstContext) {
@@ -1077,24 +1112,26 @@ function evaluateAverageIfs(args: FormulaAstNode[], context: EvaluateFormulaAstC
     return count === 0 ? "#DIV/0!" : total / count;
 }
 
-function excelSerialFromDate(year: number, month: number, day: number) {
-    const utcDate = Date.UTC(year, month - 1, day);
-    const excelEpoch = Date.UTC(1899, 11, 30);
-    return Math.floor((utcDate - excelEpoch) / 86400000);
+/** Returns the date serial of the workbook date system. */
+function excelSerialFromDate(year: number, month: number, day: number, date1904 = false) {
+    const serial = datePartsToExcelSerial(year, month, day);
+    if (serial === null) {
+        throw new Error(`Unsupported date: ${year}-${month}-${day}`);
+    }
+    return Math.floor(serial) - (date1904 ? DATE_1904_OFFSET : 0);
 }
 
-function excelSerialToDateParts(serial: number) {
-    const excelEpoch = Date.UTC(1899, 11, 30);
-    const utcDate = new Date(excelEpoch + Math.floor(serial) * 86400000);
-    return {
-        year: utcDate.getUTCFullYear(),
-        month: utcDate.getUTCMonth() + 1,
-        day: utcDate.getUTCDate(),
-    };
+/** Reads a date serial of the workbook date system. */
+function excelSerialToDateParts(serial: number, date1904 = false) {
+    const parts = serialToCalendarParts(Math.floor(serial) + (date1904 ? DATE_1904_OFFSET : 0));
+    if (!parts) {
+        throw new Error(`Unsupported date serial: ${serial}`);
+    }
+    return { year: parts.year, month: parts.month, day: parts.day };
 }
 
 // Converts date text to serials and keeps time of day as a fraction.
-function parseDateLikeString(value: string) {
+function parseDateLikeString(value: string, date1904 = false) {
     const text = value.trim();
     if (text && Number.isNaN(Number(text))) {
         const parts = parseDateLikeParts(text);
@@ -1107,7 +1144,7 @@ function parseDateLikeString(value: string) {
                 Number(parts.mi),
                 Number(parts.ss)
             );
-            if (serial !== null) return serial;
+            if (serial !== null) return serial - (date1904 ? DATE_1904_OFFSET : 0);
         }
     }
     const normalized = value
@@ -1118,15 +1155,15 @@ function parseDateLikeString(value: string) {
     if (!match) {
         return null;
     }
-    return excelSerialFromDate(Number(match[1]), Number(match[2]), Number(match[3]));
+    return excelSerialFromDate(Number(match[1]), Number(match[2]), Number(match[3]), date1904);
 }
 
-function coerceDateSerial(value: unknown) {
+function coerceDateSerial(value: unknown, date1904 = false) {
     if (typeof value === "number") {
         return value;
     }
     const text = toText(value).trim();
-    const parsed = parseDateLikeString(text);
+    const parsed = parseDateLikeString(text, date1904);
     if (parsed !== null) {
         return parsed;
     }
@@ -1296,29 +1333,47 @@ function isCountableNumber(value: unknown) {
 }
 
 function isFormulaError(value: unknown) {
-    return typeof value === "string" && /^#(?:N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NUM!|NULL!)/.test(value);
+    return (
+        typeof value === "string" &&
+        /^#(?:N\/A|REF!|VALUE!|DIV\/0!|NAME\?|NUM!|NULL!|CALC!|SPILL!|GETTING_DATA)/.test(value)
+    );
 }
 
 function looselyEquals(left: unknown, right: unknown) {
-    if (typeof left === "number" || typeof right === "number") {
-        return toNumber(left) === toNumber(right);
-    }
-    if (typeof left === "boolean" || typeof right === "boolean") {
-        return toBoolean(left) === toBoolean(right);
-    }
-    return toText(left) === toText(right);
+    return compareValues(left, right) === 0;
+}
+
+// Excel orders mixed types as numbers < text < booleans.
+function typeRank(value: unknown) {
+    return typeof value === "number" ? 0 : typeof value === "boolean" ? 2 : 1;
+}
+
+// A blank cell reads as 0, "", or FALSE, to match the other operand.
+function blankAs(other: unknown): unknown {
+    return typeof other === "number" ? 0 : typeof other === "boolean" ? false : "";
+}
+
+function isBlank(value: unknown) {
+    return value === null || value === undefined || value === "";
 }
 
 function compareValues(left: unknown, right: unknown) {
-    if (typeof left === "number" || typeof right === "number") {
-        return toNumber(left) - toNumber(right);
+    const leftValue = isBlank(left) ? blankAs(right) : left;
+    const rightValue = isBlank(right) ? blankAs(leftValue) : right;
+    const rankDiff = typeRank(leftValue) - typeRank(rightValue);
+    if (rankDiff !== 0) {
+        return rankDiff;
     }
-    const leftText = toText(left);
-    const rightText = toText(right);
+    if (typeof leftValue === "number" || typeof leftValue === "boolean") {
+        return Number(leftValue) - Number(rightValue);
+    }
+    const leftText = toText(leftValue).toLowerCase();
+    const rightText = toText(rightValue).toLowerCase();
     if (leftText === rightText) {
         return 0;
     }
     return leftText < rightText ? -1 : 1;
 }
 
+export type { FormulaEvaluationOptions };
 export { evaluateFormulaAst };
