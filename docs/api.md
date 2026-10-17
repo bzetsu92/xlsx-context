@@ -139,7 +139,7 @@ A `TokenCounter` is `{ name: string, count(text: string): number }`.
 ## Types
 
 The package exports the type of each value above. Examples: `ParsedWorkbook`, `ParsedSheet`, `WorkbookIR`,
-`IrTable`, `IrCell`, `IrChart`, `ContextChunk`, `AiContext`, `TokenCounter`.
+`IrTable`, `IrTableDetection`, `IrCell`, `IrChart`, `ContextChunk`, `AiContext`, `TokenCounter`.
 Import them with `import type`.
 
 ## Errors

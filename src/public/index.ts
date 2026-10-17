@@ -62,6 +62,7 @@ export type {
     IrShape,
     IrSheet,
     IrTable,
+    IrTableDetection,
     SourceReference,
     TableFormat,
     TextEncoderLike,

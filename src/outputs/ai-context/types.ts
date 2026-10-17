@@ -164,6 +164,21 @@ export type IrTable = {
     rows: IrCell[][];
     /** Provenance pointer for the table. */
     source: SourceReference;
+    /**
+     * Why the detector chose this range. Check it before you trust a table on an unusual layout.
+     * A table that the file declares has the reason "Excel table <name>".
+     */
+    detection?: IrTableDetection;
+};
+
+/** Detection details of one IR table. */
+export type IrTableDetection = {
+    /** Table detection strategy used. */
+    mode: "balanced" | "border" | "planner-aware";
+    /** Score of the range. Higher reads more like a table. */
+    score: number;
+    /** Scored reasons, for example "Has borders (+3)". */
+    reasons: string[];
 };
 
 /** One prose item inside an IR narrative block. */

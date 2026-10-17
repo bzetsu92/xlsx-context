@@ -46,6 +46,9 @@ Ids follow the order on the sheet: `t001` (table), `c001` (chart), `i001` (image
 Tables are numbered in reading order: a column of side-by-side tables comes before the next column.
 Table, chart, and image ids match the numbers in the Markdown headings.
 A table that the file declares as an Excel table keeps its exact range, and `name` holds its display name.
+`detection` tells why a range became a table: `{ mode, score, reasons }`,
+for example `reasons: ["Has borders (+3)", "Header-like first row (+2)"]`.
+Check it when a table looks wrong on an unusual layout, or try another `tableDetectionMode`.
 
 Each chart series keeps its ranges and the values from the chart cache.
 `sourceTable` names the table that holds the series values, for example `t001`.

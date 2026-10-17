@@ -211,6 +211,11 @@ function toIrTable(
         headers: hasHeader ? rows[0].map((cell) => cell.display) : [],
         rows,
         source: { sheet: sheet.name, range, anchor: "" },
+        detection: {
+            mode: options.tableDetectionMode || "balanced",
+            score: candidate.score,
+            reasons: candidate.reasonSummary.slice(),
+        },
     };
 }
 

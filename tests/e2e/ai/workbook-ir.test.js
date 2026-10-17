@@ -253,4 +253,14 @@ describe("buildWorkbookIR()", () => {
 
         expect(ir.sheets[0].comments.map((entry) => entry.address)).toEqual(["AA1", "B2", "C2", "B10"]);
     });
+
+    it("explains why each table range was chosen", async () => {
+        const workbook = await parseFixture(core, "table/table-basic-sample01.xlsx");
+
+        const [table] = aiWorkbookIr.buildWorkbookIR(workbook, { tableDetectionMode: "border" }).sheets[0].tables;
+
+        expect(table.detection.mode).toBe("border");
+        expect(table.detection.score).toBeGreaterThan(0);
+        expect(table.detection.reasons).toContain("Has borders (+3)");
+    });
 });
