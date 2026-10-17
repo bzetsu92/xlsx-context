@@ -1,0 +1,6 @@
+dist/
+bundle/
+release-assets/
+coverage/
+node_modules/
+*.log

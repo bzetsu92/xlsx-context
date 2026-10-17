@@ -1,0 +1,16 @@
+.DS_Store
+local-data/
+workplace/*
+!workplace/.gitkeep
+node_modules/
+.npm-cache/
+dist/
+web/lib/
+bench-results/
+coverage/
+*.log
+npm-debug.log*
+.vscode/mcp.json
+out/
+web/
+xlsx-context-web/
