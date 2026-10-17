@@ -98,6 +98,19 @@ function createDeps() {
     };
 }
 
+// Parses one worksheet XML with the default style. Returns a thunk, so tests can time or expect a throw.
+function parseSheetXml(worksheetXml) {
+    const files = new Map([["xl/worksheets/sheet1.xml", new TextEncoder().encode(worksheetXml)]]);
+    const style = {
+        borders: { top: false, bottom: false, left: false, right: false },
+        numFmtId: 0,
+        formatCode: "General",
+        textStyle: { bold: false, italic: false, strike: false, underline: false },
+    };
+    return () =>
+        worksheetParser.parseWorksheet(files, "Sheet1", "xl/worksheets/sheet1.xml", 1, [], [style], createDeps()).cells;
+}
+
 describe("xlsx-context worksheet parser", () => {
     it("extracts shared string and boolean cell values", () => {
         const api = worksheetParser;
@@ -299,6 +312,40 @@ describe("xlsx-context worksheet parser", () => {
             tooltip: "go",
             display: "",
         });
+    });
+
+    it("maps a sheet-wide hyperlink onto existing cells only", () => {
+        const sheet = parseSheetXml(`<?xml version="1.0" encoding="UTF-8"?>
+      <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <sheetData>
+          <row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row>
+          <row r="5"><c r="C5" t="inlineStr"><is><t>c</t></is></c></row>
+        </sheetData>
+        <hyperlinks>
+          <hyperlink ref="A1:XFD1048576" location="S!A1"/>
+          <hyperlink ref="C5" location="S!B2"/>
+        </hyperlinks>
+      </worksheet>`);
+        const startedAt = performance.now();
+        const cells = sheet();
+        const elapsedMs = performance.now() - startedAt;
+
+        expect(cells.find((cell) => cell.address === "A1")?.hyperlink?.target).toBe("S!A1");
+        // A later hyperlink wins over an earlier one, as before.
+        expect(cells.find((cell) => cell.address === "C5")?.hyperlink?.target).toBe("S!B2");
+        expect(elapsedMs).toBeLessThan(500);
+    });
+
+    it("rejects hyperlink ranges that cover too many cells", () => {
+        const cells = Array.from({ length: 2000 }, (_, index) => `<c r="A${index + 1}"><v>1</v></c>`).join("");
+        const links = '<hyperlink ref="A1:A1048576" location="S!A1"/>'.repeat(5001);
+        const sheet = parseSheetXml(`<?xml version="1.0" encoding="UTF-8"?>
+      <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+        <sheetData><row r="1">${cells}</row></sheetData>
+        <hyperlinks>${links}</hyperlinks>
+      </worksheet>`);
+
+        expect(() => sheet()).toThrow("xl/worksheets/sheet1.xml: Hyperlink ranges cover too many cells.");
     });
 
     it("parses notes and threaded comments from worksheet relationships", () => {

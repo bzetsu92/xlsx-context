@@ -104,9 +104,18 @@ function expandRangeAddresses(
     return addresses;
 }
 
+type CellPosition = { address: string; row: number; col: number };
+
+// Caps the cell checks for all hyperlink ranges on one sheet. Real files stay far below it.
+const MAX_HYPERLINK_CELL_CHECKS = 10_000_000;
+
 /**
- * Collects hyperlinks for every covered cell.
+ * Collects hyperlinks for every covered cell that exists in the sheet.
  * Reads external targets from relationships and keeps in-sheet locations internal.
+ * Visits at most min(range area, cell count) cells per link, so one wide ref
+ * such as A1:XFD1048576 cannot expand into billions of addresses.
+ *
+ * @param getCells Cell positions of the sheet. Called only when the sheet has hyperlinks.
  */
 function parseWorksheetHyperlinks(
     files: Map<string, Uint8Array>,
@@ -114,12 +123,17 @@ function parseWorksheetHyperlinks(
     sheetPath: string,
     deps: Pick<WorksheetParserDependencies, "parseRelationshipEntries" | "buildRelsPath" | "parseRangeRef"> & {
         colToLetters: (col: number) => string;
-    }
+    },
+    getCells: () => CellPosition[]
 ): Map<string, ParsedCell["hyperlink"]> {
     const hyperlinks = new Map<string, ParsedCell["hyperlink"]>();
+    const hyperlinkNodes = Array.from(worksheetDoc.getElementsByTagName("hyperlink"));
+    if (hyperlinkNodes.length === 0) return hyperlinks;
     const relsPath = deps.buildRelsPath(sheetPath);
     const relEntries = deps.parseRelationshipEntries(files, relsPath, sheetPath);
-    const hyperlinkNodes = Array.from(worksheetDoc.getElementsByTagName("hyperlink"));
+    const cells = getCells();
+    const cellAddresses = new Set(cells.map((cell) => cell.address));
+    let cellChecks = 0;
     for (const node of hyperlinkNodes) {
         const ref = (node.getAttribute("ref") || "").trim();
         if (!ref) continue;
@@ -149,8 +163,26 @@ function parseWorksheetHyperlinks(
             tooltip,
             display,
         } satisfies NonNullable<ParsedCell["hyperlink"]>;
-        for (const address of expandRangeAddresses(ref, deps)) {
-            hyperlinks.set(address, hyperlink);
+        const range = deps.parseRangeRef(ref);
+        const startRow = Math.max(1, range.startRow);
+        const endRow = Math.max(range.startRow, range.endRow);
+        const startCol = Math.max(1, range.startCol);
+        const endCol = Math.max(range.startCol, range.endCol);
+        const area = Math.max(0, endRow - startRow + 1) * Math.max(0, endCol - startCol + 1);
+        cellChecks += Math.min(area, cells.length);
+        if (cellChecks > MAX_HYPERLINK_CELL_CHECKS) {
+            throw new Error(`${sheetPath}: Hyperlink ranges cover too many cells.`);
+        }
+        if (area <= cells.length) {
+            for (const address of expandRangeAddresses(ref, deps)) {
+                if (cellAddresses.has(address)) hyperlinks.set(address, hyperlink);
+            }
+        } else {
+            for (const cell of cells) {
+                if (cell.row >= startRow && cell.row <= endRow && cell.col >= startCol && cell.col <= endCol) {
+                    hyperlinks.set(cell.address, hyperlink);
+                }
+            }
         }
     }
     return hyperlinks;
@@ -623,7 +655,12 @@ function parseWorksheet(
         ? (sheetData.items as unknown as Element[])
         : Array.from(doc.getElementsByTagName("c"));
     const sharedFormulaMap = new Map<string, { address: string; formulaText: string }>();
-    const hyperlinks = parseWorksheetHyperlinks(files, doc, sheetPath, deps);
+    const hyperlinks = parseWorksheetHyperlinks(files, doc, sheetPath, deps, () =>
+        cellElements.map((cellElement) => {
+            const address = cellElement.getAttribute("r") || "";
+            return { address, ...deps.parseCellAddress(address) };
+        })
+    );
     const parsedCells = cellElements.map((cellElement) => {
         const address = cellElement.getAttribute("r") || "";
         const position = deps.parseCellAddress(address);
